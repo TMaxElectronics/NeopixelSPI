@@ -8,6 +8,44 @@
 #include "SPI.h"
 #include "System.h"
 
+static uint32_t ledCodes[] = {0b110, 0b100};
+
+static void setOutputBit(NP_Handle_t * handle, uint32_t bitIndex, uint32_t value){
+    //move bitIndex to position in output data array
+    bitIndex = bitIndex * 3 + 1;
+    //convert to bit position in output array
+    uint32_t currByte = (bitIndex) >> 3;    // = / 8
+    uint32_t currBit = (bitIndex) & 0b111;  // = % 8
+    
+    handle->outputData[currByte] &= ~SYS_BITMASK[7-currBit];
+    if(value) handle->outputData[currByte] |= SYS_BITMASK[7-currBit];
+}
+
+static void initOutputData(NP_Handle_t * handle){
+    if(handle == NULL) return;
+    uint32_t currBit = 0;
+    uint32_t currByte = 0;
+    
+    while(currByte < handle->dataLength){
+        handle->outputData[currByte] |= SYS_BITMASK[7-currBit];
+        //continue to next bit
+        if(++currBit >= 8){
+            currBit = 0;
+            currByte ++;
+        }
+        handle->outputData[currByte] &= ~SYS_BITMASK[7-currBit];
+        if(++currBit >= 8){
+            currBit = 0;
+            currByte ++;
+        }
+        handle->outputData[currByte] &= ~SYS_BITMASK[7-currBit];
+        if(++currBit >= 8){
+            currBit = 0;
+            currByte ++;
+        }
+    }
+}
+
 NP_Handle_t * NP_init(SPI_HANDLE * spiHandle, uint32_t arrayLength, LedColorType_t colorType){
     NP_Handle_t * ret = pvPortMalloc(sizeof(NP_Handle_t));
     
@@ -18,13 +56,15 @@ NP_Handle_t * NP_init(SPI_HANDLE * spiHandle, uint32_t arrayLength, LedColorType
     //allocate output data buffer. Size needs to accommodate three bits per bit in the color data => size = colorsPerLED*8*3/8 = colorsPerLED * 3
     switch(colorType){
         case RGB:
-            ret->outputData = pvPortMalloc(3*arrayLength);
-            ret->dataLength = 3*arrayLength;
+            ret->outputData = pvPortMalloc(3*3*arrayLength);
+            ret->dataLength = 3*3*arrayLength;
+            ret->bitsPerPixel = 3*8;
             break;
             
         case RGBW:
-            ret->outputData = pvPortMalloc(4*arrayLength);
-            ret->dataLength = 4*arrayLength;
+            ret->outputData = pvPortMalloc(3*4*arrayLength);
+            ret->dataLength = 3*4*arrayLength;
+            ret->bitsPerPixel = 4*8;
             break;
             
         default:
@@ -39,70 +79,45 @@ NP_Handle_t * NP_init(SPI_HANDLE * spiHandle, uint32_t arrayLength, LedColorType
     
     //disable input pin
     SPI_setCustomPinConfig(spiHandle, 0, 1);
+    
+    SPI_setDMAEnabled(spiHandle, 1);
+    
+    initOutputData(ret);
+    
+    return ret;
 }
 
 void NP_setPixel(NP_Handle_t * handle, uint32_t i, uint32_t r, uint32_t g, uint32_t b, uint32_t w){
     if(handle == NULL) return;
     
     //update output data
+    uint32_t currBit = handle->bitsPerPixel * i;
     
-    //get position within the array
-    uint32_t bitCount = 0;
-    switch(handle->colorType){
-        case RGB:
-            bitCount = 24;
-            break;
-            
-        case RGBW:
-            bitCount = 32;
-            break;
-            
-        default:
-            //invalid color config selected, return
-            return;
-    }
-    uint32_t startBit = bitCount * i; 
-   
-    uint32_t currByte = startBit / 8;
-    uint32_t currBit = startBit % 8;
-    
-    for(uint32_t bitInColor = 0; bitInColor < bitCount; bitInColor++){
+    for(uint32_t bitInColor = 0; bitInColor < handle->bitsPerPixel; bitInColor++){
         //get current bit
         
         uint32_t bitValue = 0;
         //which color is being written right now?
         switch(bitInColor/8){
-            case 0: //red
-                bitValue = (r & SYS_BITMASK[bitInColor % 8]) > 0;
+            case 1: //red
+                bitValue = (r & SYS_BITMASK[7 - (bitInColor % 8)]) > 0;
                 break;
-            case 1: //green
-                bitValue = (g & SYS_BITMASK[bitInColor % 8]) > 0;
+            case 0: //green
+                bitValue = (g & SYS_BITMASK[7 - (bitInColor % 8)]) > 0;
                 break;
             case 2: //blue
-                bitValue = (b & SYS_BITMASK[bitInColor % 8]) > 0;
+                bitValue = (b & SYS_BITMASK[7 - (bitInColor % 8)]) > 0;
                 break;
             case 3: //white
-                bitValue = (w & SYS_BITMASK[bitInColor % 8]) > 0;
+                bitValue = (w & SYS_BITMASK[7 - (bitInColor % 8)]) > 0;
                 break;
         }
         
-        
-        //write current bit to output array
-        
-        //clear bit first
-        handle->outputData[currByte] &= ~SYS_BITMASK[bitValue];
-        //set bit if data == 1
-        if(bitValue) handle->outputData[currByte] |= SYS_BITMASK[bitValue];
-        
-        
-        //continue to next bit
-        if(++currBit >= 8){
-            currBit = 0;
-            currByte ++;
-        }
+        //write data into array
+        setOutputBit(handle, currBit+bitInColor, bitValue);
     }
 }
 
 void NP_update(NP_Handle_t * handle){
-    SPI_sendBytes(handle->spiHandle, handle->outputData, handle->dataLength, 1, 0, NULL, NULL);
+    SPI_sendBytes(handle->spiHandle, handle->outputData, handle->dataLength, 0, 0, NULL, NULL);
 }

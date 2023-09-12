@@ -12,6 +12,7 @@ typedef struct{
     
     uint8_t * outputData;
     uint32_t dataLength;
+    uint32_t bitsPerPixel;
 } NP_Handle_t;
 
 void NP_update(NP_Handle_t * handle);
